@@ -11,8 +11,8 @@ use bdk_wallet::signer::{SignOptions, SignerError, SignersContainer};
 use bdk_wallet::test_utils::*;
 use bdk_wallet::KeychainKind;
 use bdk_wallet::{
-    AddressInfo, Balance, FinalizeInputOutcome, IndexOutOfBoundsError, PersistedWallet, Update,
-    Wallet, WalletTx,
+    AddressInfo, Balance, FinalizeInputOutcome, IndexOutOfBoundsError, PersistedWallet,
+    TransactionInfo, Update, Wallet,
 };
 use bitcoin::constants::COINBASE_MATURITY;
 use bitcoin::hashes::Hash;
@@ -85,7 +85,7 @@ fn test_get_funded_wallet_balance() {
 fn test_get_funded_wallet_sent_and_received() {
     let (wallet, txid) = get_funded_wallet_wpkh();
 
-    let tx = wallet.get_tx(txid).expect("transaction").tx_node.tx;
+    let tx = wallet.get_tx(txid).expect("transaction").details.tx;
     let (sent, received) = wallet.sent_and_received(&tx);
 
     // The funded wallet contains a tx with a 76_000 sats input and two outputs, one spending 25_000
@@ -99,7 +99,7 @@ fn test_get_funded_wallet_sent_and_received() {
 fn test_get_funded_wallet_tx_fees() {
     let (wallet, txid) = get_funded_wallet_wpkh();
 
-    let tx = wallet.get_tx(txid).expect("transaction").tx_node.tx;
+    let tx = wallet.get_tx(txid).expect("transaction").details.tx;
     let tx_fee = wallet.calculate_fee(&tx).expect("transaction fee");
 
     // The funded wallet contains a tx with a 76_000 sats input and two outputs, one spending 25_000
@@ -112,7 +112,7 @@ fn test_get_funded_wallet_tx_fees() {
 fn test_get_funded_wallet_tx_fee_rate() {
     let (wallet, txid) = get_funded_wallet_wpkh();
 
-    let tx = wallet.get_tx(txid).expect("transaction").tx_node.tx;
+    let tx = wallet.get_tx(txid).expect("transaction").details.tx;
     let tx_fee_rate = wallet
         .calculate_fee_rate(&tx)
         .expect("transaction fee rate");
@@ -132,7 +132,7 @@ fn test_get_funded_wallet_tx_fee_rate() {
 fn test_legacy_get_funded_wallet_tx_fee_rate() {
     let (wallet, txid) = get_funded_wallet_single(get_test_pkh());
 
-    let tx = wallet.get_tx(txid).expect("transaction").tx_node.tx;
+    let tx = wallet.get_tx(txid).expect("transaction").details.tx;
     let tx_fee_rate = wallet
         .calculate_fee_rate(&tx)
         .expect("transaction fee rate");
@@ -2463,8 +2463,15 @@ fn test_taproot_sign_using_non_witness_utxo() {
     let mut psbt = builder.finish().unwrap();
 
     psbt.inputs[0].witness_utxo = None;
-    psbt.inputs[0].non_witness_utxo =
-        Some(wallet.get_tx(prev_txid).unwrap().tx_node.as_ref().clone());
+    psbt.inputs[0].non_witness_utxo = Some(
+        wallet
+            .get_tx(prev_txid)
+            .unwrap()
+            .details
+            .tx
+            .as_ref()
+            .clone(),
+    );
     assert!(
         psbt.inputs[0].non_witness_utxo.is_some(),
         "Previous tx should be present in the database"
@@ -3131,11 +3138,16 @@ fn test_transactions_sort_by() {
     receive_output(&mut wallet, Amount::from_sat(25_000), ReceiveTo::Mempool(0));
 
     // sort by chain position, unconfirmed then confirmed by descending block height
-    let sorted_txs: Vec<WalletTx> =
-        wallet.transactions_sort_by(|t1, t2| t2.chain_position.cmp(&t1.chain_position));
+    let sorted_txs: Vec<TransactionInfo> = wallet
+        .transactions_sort_by(|t1, t2| t2.details.chain_position.cmp(&t1.details.chain_position));
     let conf_heights: Vec<Option<u32>> = sorted_txs
         .iter()
-        .map(|tx| tx.chain_position.confirmation_height_upper_bound())
+        .map(|tx| {
+            tx.details
+                .chain_position
+                .as_ref()
+                .and_then(|position| position.confirmation_height_upper_bound())
+        })
         .collect();
     assert_eq!([None, Some(2000), Some(1000)], conf_heights.as_slice());
 }
@@ -3185,7 +3197,7 @@ fn test_wallet_transactions_relevant() {
     assert_eq!(relevant_tx_count_before, relevant_tx_count_after);
     assert!(!test_wallet
         .transactions()
-        .any(|wallet_tx| wallet_tx.tx_node.txid == other_txid));
+        .any(|wallet_tx| wallet_tx.details.txid == other_txid));
     assert!(test_wallet
         .tx_graph()
         .list_canonical_txs(
@@ -3199,12 +3211,12 @@ fn test_wallet_transactions_relevant() {
 }
 
 #[test]
-fn test_tx_details_method() {
+fn test_transaction_info_details() {
     let (test_wallet, txid_1) = get_funded_wallet_wpkh();
-    let tx_details_1_option = test_wallet.tx_details(txid_1);
+    let tx_info_1_option = test_wallet.get_tx(txid_1);
 
-    assert!(tx_details_1_option.is_some());
-    let tx_details_1 = tx_details_1_option.unwrap();
+    assert!(tx_info_1_option.is_some());
+    let tx_details_1 = tx_info_1_option.unwrap().details;
 
     assert_eq!(
         tx_details_1.txid.to_string(),
@@ -3217,8 +3229,8 @@ fn test_tx_details_method() {
 
     // Transaction id not part of the TxGraph
     let txid_2 = Txid::from_raw_hash(Hash::all_zeros());
-    let tx_details_2_option = test_wallet.tx_details(txid_2);
-    assert!(tx_details_2_option.is_none());
+    let tx_info_2_option = test_wallet.get_tx(txid_2);
+    assert!(tx_info_2_option.is_none());
 }
 
 #[test]
